@@ -112,7 +112,14 @@ _workingPriority:		db	0					;* 存储当前剩下的优先数
 _sixteen:				db  50					;* 用来存储四个优先级
 _ten:					db	25
 _eight:					db	15
-_six:					db	6  
+_six:					db	6
+
+_sixteen_copy			db  0                   ;* 用来搜索下一个最大优先数的备份
+_ten_copy				db	25
+_eight_copy				db	15
+_six_copy				db	6
+_next					db	0 					;* 用来记录下一个最大的优先级
+
 _MemChkBuf:	times	256	db	0
 
 ;* 保护模式下使用这些符号，因为保护模式下和实模式下机制不同
@@ -138,7 +145,13 @@ workingPriority		equ _workingPriority - $$
 sixteen:			equ _sixteen - $$
 ten:				equ _ten - $$
 eight:				equ _eight - $$
-six:				equ _six - $$ 
+six:				equ _six - $$
+
+sixteen_copy		equ _sixteen_copy - $$
+ten_copy			equ _ten_copy - $$
+eight_copy			equ _eight_copy - $$
+six_copy			equ _six_copy - $$
+next				equ _next - $$
 DataLen			    equ	$ - LABEL_DATA
 ;* End of [SECTION .data1]
 
@@ -167,8 +180,8 @@ LABEL_IDT:
 %endrep
 
 IdtLen	equ	$ - LABEL_IDT
-IdtPtr	dw	IdtLen - 1	; 段界限
-		dd	0		; 基地址
+IdtPtr	dw	IdtLen - 1	;* 段界限
+		dd	0			;* 基地址
 ;* END of [SECTION .idt]
 
 
@@ -738,7 +751,6 @@ LABEL_SEG_CODE32:
 
     call SetupPaging   ;* 打开分页机制
 
-	; mov byte [workingTask], 0
 
     ;* 加载LDT
     mov ax, SelectorLDTB   ;!! workingTask 的值初始默认为0
@@ -748,8 +760,18 @@ LABEL_SEG_CODE32:
     mov ax, SelectorTSSB
     ltr ax
 
-	;* 初始化变量 workingPriority
-	; mov byte [workingPriority], 200
+	;* 初始化一些变量的值
+	mov al, 0
+	mov [sixteen_copy], al ;* 将对应的搜索备份数据清零
+	mov al, [ten]
+	mov [ten_copy], al
+	mov al, [eight]
+	mov [eight_copy], al
+	mov al, [six]
+	mov [six_copy], al
+
+
+	;* 初始化变量 workingPriority, 以最高的优先数开始
 	mov al, byte [sixteen]
 	mov byte [workingPriority], al
 
@@ -855,16 +877,12 @@ io_delay:
 ;! workingTask = 2 -> TSS-C, 此时 jmp SelectorTSSD, workingTask置 3,  C -> D
 ;! workingTask = 3 -> TSS-D, 此时 jmp SelectorTSSB, workingTask置 0,  D -> B
 
-;! 对应关系： 四个任务时，workingTask初始化默认为0
+;! 对应关系：四个任务时
 ;! 实现优先数调度时的对应关系
-;! workingTask = 0 -> TSS-B, 如果priority = 0, 此时 jmp SelectorTSSA, workingTask置 1， B -> A
-;! 							corresponding priority = [sixteen]
-;! workingTask = 1 -> TSS-A, 如果priority = 0, 此时 jmp SelectorTSSC, workingTask置 2,  A -> C
-;!							corresponding priority = [ten]
-;! workingTask = 2 -> TSS-C, 如果priority = 0, 此时 jmp SelectorTSSD, workingTask置 3,  C -> D
-;!							corresponding priority = [eight]
-;! workingTask = 3 -> TSS-D, 如果priority = 0, 此时 jmp SelectorTSSB, workingTask置 0,  D -> B
-;! 							corresponding priority = [six]
+;! TSS-B 对应静态优先数在[sixteen]
+;! TSS-A 对应静态优先数在[ten]
+;! TSS-C 对应静态优先数在[eight]
+;! TSS-D 对应静态优先数在[six]
 _ClockHandler:
 ClockHandler	equ	_ClockHandler - $$
 	push eax
@@ -878,127 +896,104 @@ ClockHandler	equ	_ClockHandler - $$
 	jmp .exit
 
 .switch:
+	;* 开始寻找下一个最大的优先数
+	mov byte [next], 0
+
+	mov al, [sixteen_copy]
+	cmp [next], al
+	jge	.step1
+	mov byte [next], al     ;* 如果找到一个更大的优先数则对[next]进行更新
+.step1:
+	mov al, [ten_copy]
+	cmp [next], al
+	jge .step2
+	mov byte [next], al     ;* 如果找到一个更大的优先数则对[next]进行更新
+.step2:
+	mov al, [eight_copy]
+	cmp [next], al
+	jge .step3
+	mov byte [next], al		;* 如果找到一个更大的优先数则对[next]进行更新
+.step3:
+	mov al, [six_copy]
+	cmp [next], al
+	jge .step4
+	mov byte [next], al     ;* 如果找到一个更大的优先数则对[next]进行更新
+.step4:
+	;* 比较最终得到的优先数是否为0
 	mov al, 0
-	cmp byte [workingTask], al
-	jz .zero
+	cmp [next], al          ;* 如果是 0， 进行下一轮调度
+	jz .next_round
 
-	mov al, 1
-	cmp byte [workingTask], al
-	jz .one
+	;* 如果经过比较得到的优先数不为 0
+	mov al, [ten_copy]
+	cmp [next], al
+	jz .taskA
 
-	mov al, 2
-	cmp byte [workingTask], al
-	jz .two
+	mov al, [eight_copy]
+	cmp [next], al
+	jz .taskC
 
-.three:
-	mov byte [workingTask], 0
-	mov al, byte [sixteen]
-	mov byte [workingPriority], al
-	mov al, 20h
-	out 20h, al
-	jmp SelectorTSSB:0
-	jmp .exit
+	mov al, [six_copy]
+	cmp [next], al
+	jz .taskD
+	jmp .next_round
 
-.zero:
-	mov byte [workingTask], 1
-	mov al, byte [ten]
-	mov byte [workingPriority], al
+.taskA:
+	mov al, [ten_copy]
+	mov [workingPriority], al
+
+	mov byte [ten_copy], 0
+
 	mov al, 20h
 	out 20h, al
 	jmp SelectorTSSA:0
 	jmp .exit
 
-.one:
-	mov byte [workingTask], 2
-	mov al, byte [eight]
-	mov byte [workingPriority], al
+.taskC:
+	mov al, [eight_copy]
+	mov [workingPriority], al
+
+	mov byte [eight_copy], 0
+
 	mov al, 20h
 	out 20h, al
 	jmp SelectorTSSC:0
 	jmp .exit
 
-.two:
-	mov byte [workingTask], 3
-	mov al, byte [six]
-	mov byte [workingPriority], al
+.taskD:
+	mov al, [six_copy]
+	mov [workingPriority], al
+
+	mov byte [six_copy], 0
+
 	mov al, 20h
 	out 20h, al
 	jmp SelectorTSSD:0
 	jmp .exit
 
 
+.next_round:
+	;* 恢复 'copy' 内存单元中的备份
+	mov al, 0   
+	mov [sixteen_copy], al
+	mov al, [sixteen]
+	mov byte [workingPriority], al    ;* 当前任务得到定义的最高的优先数
+	mov al, [ten]
+	mov [ten_copy], al
+	mov al, [eight]
+	mov [eight_copy], al
+	mov al, [six]
+	mov [six_copy], al
+
+
+	mov al, 20h
+	out 20h, al
+	jmp SelectorTSSB:0
+	jmp .exit
+
 .exit:
 	pop eax
 	iretd
-
-
-; 	push eax
-; 	mov eax, 0
-; 	cmp [workingTask], eax
-; 	jz .zero
-
-; 	mov eax, 1
-; 	cmp [workingTask], eax
-; 	jz .one
-	
-; 	mov eax, 2
-; 	cmp [workingTask], eax
-; 	jz .two
-
-; .three:		;* workingTask = 3 时
-; 	mov byte [workingTask], 0
-; 	mov al, 20h
-; 	out 20h, al
-; 	jmp SelectorTSSB:0
-; 	jmp .exit
-
-; .zero:     ;* workingTask = 0 时
-; 	mov byte [workingTask], 1
-; 	mov al, 20h
-; 	out 20h, al     ;* 发送EOI
-; 	jmp SelectorTSSA:0
-; 	jmp .exit
-
-; .one:	   ;* workingTask = 1 时
-; 	mov byte [workingTask], 2
-; 	mov al, 20h
-; 	out 20h, al
-; 	jmp SelectorTSSC:0
-; 	jmp .exit
-
-; .two:		;* workingTask = 2 时
-; 	mov byte [workingTask], 3
-; 	mov al, 20h
-; 	out 20h, al
-; 	jmp SelectorTSSD:0
-; 	jmp .exit
-
-; .exit:      ;* 所有路径跳出时都跳转到此处
-; 	pop eax
-; 	iretd
-
-
-; 	push eax
-; 	mov eax, 1
-; 	cmp [workingTask], eax
-; 	jz .BAR
-
-; 	mov byte [workingTask], 1	;! workingTask = 0时
-; 	mov al, 20h
-; 	out 20h, al			;* 发送 EOI
-; 	jmp SelectorTSSA:0
-; 	jmp .exit
-
-; .BAR:                           ;! workingTask = 1时
-; 	mov byte [workingTask], 0
-; 	mov al, 20h
-; 	out 20h, al			;* 发送 EOI
-; 	jmp SelectorTSSB:0
-; 	jmp .exit
-
-; .exit:
-; 	pop eax				;* 恢复eax寄存器的值
-; 	iretd
 
 
 _SpuriousHandler:
@@ -1050,13 +1045,6 @@ SetupPaging:
 	add	eax, 4096		; 每一页指向 4K 的空间
 	loop	.2
 
-; 	mov	eax, PageDirBase0    ;!! 首先让cr3寄存器指向页表PageDirBase0
-; 	mov	cr3, eax
-; 	mov	eax, cr0
-; 	or	eax, 80000000h       ;* 设置cr0寄存器的最高位来打开分页机制
-; 	mov	cr0, eax
-; 	jmp	short .3
-; .3:
 	nop
 
     ;* 初始化第二个页目录和页表
@@ -1324,8 +1312,8 @@ Code16Len   equ $ - LABEL_SEG_CODE16
 ALIGN	32
 LABEL_LDT_A:
 ;*                                   段基址,         段界限,      属性
-LABEL_LDT_DESC_CODE_A:	Descriptor      0,      CodeALen-1,     DA_C + DA_32	; Code, 32 位
-LABEL_LDT_DESC_STACK_A: Descriptor      0,      TopOfStackA,    DA_DRWA + DA_32 ; Stack
+LABEL_LDT_DESC_CODE_A:	Descriptor      0,      CodeALen-1,     DA_C + DA_32	
+LABEL_LDT_DESC_STACK_A: Descriptor      0,      TopOfStackA,    DA_DRWA + DA_32 
 
 LDTALen		equ	$ - LABEL_LDT_A
 
@@ -1377,8 +1365,8 @@ CodeALen	equ	$ - LABEL_CODE_A
 ALIGN	32
 LABEL_LDT_B:
 ;                                   段基址,         段界限,      属性
-LABEL_LDT_DESC_CODE_B:	Descriptor      0,      CodeBLen-1,     DA_C + DA_32	; Code, 32 位
-LABEL_LDT_DESC_STACK_B: Descriptor      0,      TopOfStackB,    DA_DRWA + DA_32 ; Stack 
+LABEL_LDT_DESC_CODE_B:	Descriptor      0,      CodeBLen-1,     DA_C + DA_32	
+LABEL_LDT_DESC_STACK_B: Descriptor      0,      TopOfStackB,    DA_DRWA + DA_32 
 
 LDTBLen		equ	$ - LABEL_LDT_B
 
@@ -1414,8 +1402,8 @@ CodeBLen	equ	$ - LABEL_CODE_B
 ALIGN	32
 LABEL_LDT_C:
 ;*                                   段基址,         段界限,      属性
-LABEL_LDT_DESC_CODE_C:	Descriptor      0,      CodeCLen-1,     DA_C + DA_32	; Code, 32 位
-LABEL_LDT_DESC_STACK_C: Descriptor      0,      TopOfStackC,    DA_DRWA + DA_32 ; Stack
+LABEL_LDT_DESC_CODE_C:	Descriptor      0,      CodeCLen-1,     DA_C + DA_32	
+LABEL_LDT_DESC_STACK_C: Descriptor      0,      TopOfStackC,    DA_DRWA + DA_32 
 
 LDTCLen		equ	$ - LABEL_LDT_C
 
@@ -1452,9 +1440,8 @@ CodeCLen	equ	$ - LABEL_CODE_C
 ALIGN	32
 LABEL_LDT_D:
 ;*                                   段基址,         段界限,      属性
-LABEL_LDT_DESC_CODE_D:	Descriptor      0,      CodeDLen-1,     DA_C + DA_32	; Code, 32 位
-LABEL_LDT_DESC_STACK_D: Descriptor      0,      TopOfStackD,    DA_DRWA + DA_32 ; Stack
-
+LABEL_LDT_DESC_CODE_D:	Descriptor      0,      CodeDLen-1,     DA_C + DA_32	
+LABEL_LDT_DESC_STACK_D: Descriptor      0,      TopOfStackD,    DA_DRWA + DA_32 
 LDTDLen		equ	$ - LABEL_LDT_D
 
 ;* LDT_D 选择子
