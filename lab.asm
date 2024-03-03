@@ -4,9 +4,16 @@ PageDirBase0        equ 200000h 	;* 页目录开始地址 2M
 PageTblBase0        equ 201000h 	;* 页表开始地址 2M + 4K
 PageDirBase1        equ 210000h 	;* 页目录开始地址 2M + 64K
 PageTblBase1        equ 211000h 	;* 页表开始地址 2M + 64K + 4K
+PageDirBase2		equ 220000h     ;* 页目录开始地址 2M + 128K
+PageTblBase2		equ 221000h		;* 页表开始地址 2M + 128K + 4K
+PageDirBase3		equ 230000h		;* 页目录开始地址 2M + 192K
+PageTblBase3		equ 231000h		;* 页表开始地址 2M + 192K + 4K
+
 LinearAddrDemo      equ 00401000h
 ProcFoo             equ 00401000h   ;* 映射的第一个地址
 ProcBar             equ 00501000h   ;* 映射的第二个地址
+ProcThird			equ 00451000h	;* 映射的第三个地址
+ProcFourth			equ 00551000h   ;* 映射的第四个地址
 
 org	0100h
 	jmp	LABEL_BEGIN
@@ -26,9 +33,13 @@ LABEL_DESC_DATA:		Descriptor      0,          DataLen-1, DA_DRW			            ;*
 LABEL_DESC_STACK:		Descriptor      0,         TopOfStack, DA_DRWA | DA_32		        ;* 32位stack
 LABEL_DESC_STACK3:      Descriptor      0,        TopOfStack3, DA_DRWA + DA_32 + DA_DPL3 	;* 32位stack3
 LABEL_DESC_LDT_A:       Descriptor      0,          LDTALen-1, DA_LDT		                ;* GDT中针对LDT的描述符
-LABEL_DESC_LDT_B:       Descriptor      0,          LDTBLen-1, DA_LDT                       ;* GDT中针对LDT2的描述符
+LABEL_DESC_LDT_B:       Descriptor      0,          LDTBLen-1, DA_LDT                       ;* GDT中针对LDT-B的描述符
+LABEL_DESC_LDT_C:       Descriptor      0,          LDTCLen-1, DA_LDT		                ;* GDT中针对LDT-C的描述符
+LABEL_DESC_LDT_D:       Descriptor      0,          LDTDLen-1, DA_LDT                       ;* GDT中针对LDT-D的描述符
 LABEL_DESC_TSS_A:       Descriptor      0,          TSSALen-1, DA_386TSS	                ;* TSSA
 LABEL_DESC_TSS_B:       Descriptor      0,          TSSBLen-1, DA_386TSS                    ;* TSSB
+LABEL_DESC_TSS_C:       Descriptor      0,          TSSCLen-1, DA_386TSS	                ;* TSSD
+LABEL_DESC_TSS_D:       Descriptor      0,          TSSDLen-1, DA_386TSS                    ;* TSSD
 LABEL_DESC_VIDEO:		Descriptor      0B8000h,       0ffffh, DA_DRW			            ;* 显存首地址
 
 ;* 调用门                                   目标选择子       偏移    Dcount, 属性   
@@ -52,8 +63,12 @@ SelectorStack		equ	LABEL_DESC_STACK	- LABEL_GDT
 SelectorStack3      equ LABEL_DESC_STACK3 - LABEL_GDT + SA_RPL3
 SelectorLDTA		equ	LABEL_DESC_LDT_A	- LABEL_GDT
 SelectorLDTB		equ	LABEL_DESC_LDT_B	- LABEL_GDT
+SelectorLDTC		equ	LABEL_DESC_LDT_C	- LABEL_GDT
+SelectorLDTD		equ	LABEL_DESC_LDT_D	- LABEL_GDT
 SelectorTSSA		equ	LABEL_DESC_TSS_A	- LABEL_GDT
 SelectorTSSB		equ	LABEL_DESC_TSS_B	- LABEL_GDT
+SelectorTSSC		equ	LABEL_DESC_TSS_C	- LABEL_GDT
+SelectorTSSD		equ	LABEL_DESC_TSS_D	- LABEL_GDT
 SelectorVideo		equ	LABEL_DESC_VIDEO	- LABEL_GDT
 
 SelectorCallGateTest  equ  LABEL_CALL_GATE_TEST - LABEL_GDT + SA_RPL3  ;* 测试调用门的选择子
@@ -92,7 +107,12 @@ _PageTableNumber:		dd	0
 _SavedIDTR:			    dd	0					;* 用于保存 IDTR
 				        dd	0
 _SavedIMREG:			db	0					;* 中断屏蔽寄存器值
-_workingTask:           db  0      
+_workingTask:           db  0 
+_workingPriority:		db	0					;* 存储当前剩下的优先数  
+_sixteen:				db  50					;* 用来存储四个优先级
+_ten:					db	25
+_eight:					db	15
+_six:					db	6  
 _MemChkBuf:	times	256	db	0
 
 ;* 保护模式下使用这些符号，因为保护模式下和实模式下机制不同
@@ -112,9 +132,13 @@ ARDStruct		    equ	_ARDStruct	- $$
 MemChkBuf		    equ	_MemChkBuf	- $$
 SavedIDTR		    equ	_SavedIDTR	- $$
 SavedIMREG		    equ	_SavedIMREG	- $$
-PageTableNumber		equ	_PageTableNumber- $$
-workingTask         equ     _workingTask        - $$ 
-
+PageTableNumber		equ	_PageTableNumber - $$
+workingTask         equ _workingTask - $$ 
+workingPriority		equ _workingPriority - $$
+sixteen:			equ _sixteen - $$
+ten:				equ _ten - $$
+eight:				equ _eight - $$
+six:				equ _six - $$ 
 DataLen			    equ	$ - LABEL_DATA
 ;* End of [SECTION .data1]
 
@@ -159,7 +183,8 @@ TopOfStack3 equ $ - LABEL_STACK3 - 1
 
 
 ;*ANCHOR - TSS-A
-;* 初始化任务状态堆栈段TSS[SECTION .tss_a]
+;* 初始化任务状态堆栈段TSS
+[SECTION .tss_a]
 ALIGN	32
 [BITS	32]
 LABEL_TSS_A:
@@ -195,7 +220,9 @@ TSSALen		equ	$ - LABEL_TSS_A
 
 
 ;*ANCHOR - TSS-B
-;* 初始化任务状态堆栈段TSS-BALIGN	32
+;* 初始化任务状态堆栈段TSS-B
+[SECTION .tss_b]
+ALIGN	32
 [BITS	32]
 LABEL_TSS_B:
 		DD	0			
@@ -227,6 +254,79 @@ LABEL_TSS_B:
 		DW	$ - LABEL_TSS_B + 2	;* I/O位图基址
 		DB	0ffh				;* I/O位图结束标志
 TSSBLen		equ	$ - LABEL_TSS_B
+
+;*ANCHOR - TSS-C
+;* 初始化任务状态堆栈段TSS-C
+[SECTION .tss_c]
+ALIGN	32
+[BITS	32]
+LABEL_TSS_C:
+		DD	0			
+		DD	0		        	;* 0 级堆栈
+		DD	0		        
+		DD	0					;* 1 级堆栈
+		DD	0			
+		DD	0					;* 2 级堆栈
+		DD	0			
+		DD	PageDirBase2		;* CR3 -> 局部任务对应页目录的基址
+		DD	0					;* EIP
+		DD	0200h				;* EFLAGS
+		DD	0					;* EAX
+		DD	0					;* ECX
+		DD	0					;* EDX
+		DD	0					;* EBX
+		DD	TopOfStackC			;* ESP
+		DD	0					;* EBP
+		DD	0					;* ESI
+		DD	PageDirBase2		;* EDI
+		DD	SelectorFlatRW      ;* ES
+		DD	SelectorLDTCodeC	;* CS -> 局部任务的代码段
+		DD	SelectorLDTStackC	;* SS -> 局部任务的栈段
+		DD	SelectorData		;* DS
+		DD	0					;* FS
+		DD	0					;* GS
+		DD	SelectorLDTC		;* LDT -> GDT中对应LDT的描述符
+		DW	0					;* 调试陷阱标志
+		DW	$ - LABEL_TSS_C + 2	;* I/O位图基址
+		DB	0ffh				;* I/O位图结束标志
+TSSCLen		equ	$ - LABEL_TSS_C
+
+;*ANCHOR - TSS-D
+;* 初始化任务状态堆栈段TSS-D
+[SECTION .tss_d]
+ALIGN	32
+[BITS	32]
+LABEL_TSS_D:
+		DD	0			
+		DD	0		        	;* 0 级堆栈
+		DD	0		        
+		DD	0					;* 1 级堆栈
+		DD	0			
+		DD	0					;* 2 级堆栈
+		DD	0			
+		DD	PageDirBase3		;* CR3 -> 局部任务对应页目录的基址
+		DD	0					;* EIP
+		DD	0200h				;* EFLAGS
+		DD	0					;* EAX
+		DD	0					;* ECX
+		DD	0					;* EDX
+		DD	0					;* EBX
+		DD	TopOfStackD			;* ESP
+		DD	0					;* EBP
+		DD	0					;* ESI
+		DD	PageDirBase3		;* EDI
+		DD	SelectorFlatRW      ;* ES
+		DD	SelectorLDTCodeD	;* CS -> 局部任务的代码段
+		DD	SelectorLDTStackD	;* SS -> 局部任务的栈段
+		DD	SelectorData		;* DS
+		DD	0					;* FS
+		DD	0					;* GS
+		DD	SelectorLDTD		;* LDT -> GDT中对应LDT的描述符
+		DW	0					;* 调试陷阱标志
+		DW	$ - LABEL_TSS_D + 2	;* I/O位图基址
+		DB	0ffh				;* I/O位图结束标志
+TSSDLen		equ	$ - LABEL_TSS_D
+
 
 ;*ANCHOR - 16位实模式初始工作部分
 [SECTION .s16]
@@ -390,6 +490,66 @@ LABEL_MEM_CHK_OK:
 	mov	byte [LABEL_LDT_DESC_STACK_B + 4], al
 	mov	byte [LABEL_LDT_DESC_STACK_B + 7], ah
 
+	;*初始化LDT-C在GDT中的描述符
+	xor	eax, eax
+	mov	ax, ds
+	shl	eax, 4
+	add	eax, LABEL_LDT_C
+	mov	word [LABEL_DESC_LDT_C + 2], ax
+	shr	eax, 16
+	mov	byte [LABEL_DESC_LDT_C + 4], al
+	mov	byte [LABEL_DESC_LDT_C + 7], ah
+
+	;* 初始化LDT-C中代码段的描述符
+	xor	eax, eax
+	mov	ax, ds
+	shl	eax, 4
+	add	eax, LABEL_CODE_C
+	mov	word [LABEL_LDT_DESC_CODE_C + 2], ax
+	shr	eax, 16
+	mov	byte [LABEL_LDT_DESC_CODE_C + 4], al
+	mov	byte [LABEL_LDT_DESC_CODE_C + 7], ah
+
+	;* 初始化LDT-C中栈段的描述符        
+	xor	eax, eax
+	mov	ax, ds
+	shl	eax, 4
+	add	eax, LABEL_LDT_STACK_C
+	mov	word [LABEL_LDT_DESC_STACK_C + 2], ax
+	shr	eax, 16
+	mov	byte [LABEL_LDT_DESC_STACK_C + 4], al
+	mov	byte [LABEL_LDT_DESC_STACK_C + 7], ah
+
+	;*初始化LDT-D在GDT中的描述符
+	xor	eax, eax
+	mov	ax, ds
+	shl	eax, 4
+	add	eax, LABEL_LDT_D
+	mov	word [LABEL_DESC_LDT_D + 2], ax
+	shr	eax, 16
+	mov	byte [LABEL_DESC_LDT_D + 4], al
+	mov	byte [LABEL_DESC_LDT_D + 7], ah
+
+	;* 初始化LDT-D中代码段的描述符
+	xor	eax, eax
+	mov	ax, ds
+	shl	eax, 4
+	add	eax, LABEL_CODE_D
+	mov	word [LABEL_LDT_DESC_CODE_D + 2], ax
+	shr	eax, 16
+	mov	byte [LABEL_LDT_DESC_CODE_D + 4], al
+	mov	byte [LABEL_LDT_DESC_CODE_D + 7], ah
+
+	;* 初始化LDT-D中栈段的描述符        
+	xor	eax, eax
+	mov	ax, ds
+	shl	eax, 4
+	add	eax, LABEL_LDT_STACK_D
+	mov	word [LABEL_LDT_DESC_STACK_D + 2], ax
+	shr	eax, 16
+	mov	byte [LABEL_LDT_DESC_STACK_D + 4], al
+	mov	byte [LABEL_LDT_DESC_STACK_D + 7], ah
+
 	;* 初始化TSSA描述符
 	xor	eax, eax
 	mov	ax, ds
@@ -409,6 +569,26 @@ LABEL_MEM_CHK_OK:
 	shr	eax, 16
 	mov	byte [LABEL_DESC_TSS_B + 4], al
 	mov	byte [LABEL_DESC_TSS_B + 7], ah
+
+	;* 初始化 TSSC 描述符
+	xor	eax, eax
+	mov	ax, ds
+	shl	eax, 4
+	add	eax, LABEL_TSS_C
+	mov	word [LABEL_DESC_TSS_C + 2], ax
+	shr	eax, 16
+	mov	byte [LABEL_DESC_TSS_C + 4], al
+	mov	byte [LABEL_DESC_TSS_C + 7], ah
+
+	;* 初始化 TSSD 描述符
+	xor	eax, eax
+	mov	ax, ds
+	shl	eax, 4
+	add	eax, LABEL_TSS_D
+	mov	word [LABEL_DESC_TSS_D + 2], ax
+	shr	eax, 16
+	mov	byte [LABEL_DESC_TSS_D + 4], al
+	mov	byte [LABEL_DESC_TSS_D + 7], ah
 
 	;* 为加载GDTR做准备
     xor eax, eax
@@ -522,7 +702,7 @@ LABEL_SEG_CODE32:
 
     call DispMemSize   ;* 显示内存信息
 
-    ;* 复制两个任务函数到指定的物理地址
+    ;* 复制四个任务函数到指定的物理地址
     mov ax, cs
     mov ds, ax
     mov ax, SelectorFlatRW
@@ -540,9 +720,21 @@ LABEL_SEG_CODE32:
     call MemCpy
     add esp, 12
 
+	push LenThird    ;* 拷贝第三个到指定的物理地址
+	push OffsetThird
+	push ProcThird
+	call MemCpy
+	add esp, 12
+
+	push LenFourth	 ;* 拷贝第四个到指定的物理地址
+	push OffsetFourth
+	push ProcFourth
+	call MemCpy
+	add esp, 12
+
     mov ax, SelectorData
     mov ds, ax
-     mov es, ax
+    mov es, ax
 
     call SetupPaging   ;* 打开分页机制
 
@@ -555,6 +747,11 @@ LABEL_SEG_CODE32:
     ;* 加载TSS
     mov ax, SelectorTSSB
     ltr ax
+
+	;* 初始化变量 workingPriority
+	; mov byte [workingPriority], 200
+	mov al, byte [sixteen]
+	mov byte [workingPriority], al
 
     ;* 设置8259A
     call Init8259A
@@ -646,30 +843,162 @@ io_delay:
 	nop
 	ret
 
-;* int handler ---------------------------------------------------------------
+;*ANCHOR - 时钟中断处理程序 Clock Handler ---------------------------------------------------------------
+;! 对应关系: 两个任务时, workingTask初始化默认为 0
+;! workingTask = 0 -> TSS-B, 此时 jmp SelectorTSSA，workingTask置 1
+;! workingTask = 1 -> TSS_A, 此时 jmp SelectorTSSB，workingTask置 0
+
+;! 对应关系：四个任务时，workingTask初始化默认为 0
+;! 此时还没有实现按照优先数进行调度
+;! workingTask = 0 -> TSS-B, 此时 jmp SelectorTSSA, workingTask置 1， B -> A
+;! workingTask = 1 -> TSS-A, 此时 jmp SelectorTSSC, workingTask置 2,  A -> C
+;! workingTask = 2 -> TSS-C, 此时 jmp SelectorTSSD, workingTask置 3,  C -> D
+;! workingTask = 3 -> TSS-D, 此时 jmp SelectorTSSB, workingTask置 0,  D -> B
+
+;! 对应关系： 四个任务时，workingTask初始化默认为0
+;! 实现优先数调度时的对应关系
+;! workingTask = 0 -> TSS-B, 如果priority = 0, 此时 jmp SelectorTSSA, workingTask置 1， B -> A
+;! 							corresponding priority = [sixteen]
+;! workingTask = 1 -> TSS-A, 如果priority = 0, 此时 jmp SelectorTSSC, workingTask置 2,  A -> C
+;!							corresponding priority = [ten]
+;! workingTask = 2 -> TSS-C, 如果priority = 0, 此时 jmp SelectorTSSD, workingTask置 3,  C -> D
+;!							corresponding priority = [eight]
+;! workingTask = 3 -> TSS-D, 如果priority = 0, 此时 jmp SelectorTSSB, workingTask置 0,  D -> B
+;! 							corresponding priority = [six]
 _ClockHandler:
 ClockHandler	equ	_ClockHandler - $$
 	push eax
-	mov eax, 1
-	cmp [workingTask], eax
-	jz .BAR
+	mov al, 0
+	cmp byte [workingPriority], al    ;* 比较剩下的优先"数"是否为 0
+	jz .switch					;* 如果为 0， 切换到下一个优先数最高的任务, 并且设置workingPriority
 
-	mov byte [workingTask], 1	;! workingTask = 0时
+	dec byte [workingPriority]  ;* 如果不为 0， 把当前工作任务的优先数 减1，然后iretd返回到当前任务内
 	mov al, 20h
-	out 20h, al			;* 发送 EOI
-	jmp SelectorTSSA:0
+	out 20h, al
 	jmp .exit
 
-.BAR:                           ;! workingTask = 1时
+.switch:
+	mov al, 0
+	cmp byte [workingTask], al
+	jz .zero
+
+	mov al, 1
+	cmp byte [workingTask], al
+	jz .one
+
+	mov al, 2
+	cmp byte [workingTask], al
+	jz .two
+
+.three:
 	mov byte [workingTask], 0
+	mov al, byte [sixteen]
+	mov byte [workingPriority], al
 	mov al, 20h
-	out 20h, al			;* 发送 EOI
+	out 20h, al
 	jmp SelectorTSSB:0
 	jmp .exit
 
+.zero:
+	mov byte [workingTask], 1
+	mov al, byte [ten]
+	mov byte [workingPriority], al
+	mov al, 20h
+	out 20h, al
+	jmp SelectorTSSA:0
+	jmp .exit
+
+.one:
+	mov byte [workingTask], 2
+	mov al, byte [eight]
+	mov byte [workingPriority], al
+	mov al, 20h
+	out 20h, al
+	jmp SelectorTSSC:0
+	jmp .exit
+
+.two:
+	mov byte [workingTask], 3
+	mov al, byte [six]
+	mov byte [workingPriority], al
+	mov al, 20h
+	out 20h, al
+	jmp SelectorTSSD:0
+	jmp .exit
+
+
 .exit:
-	pop eax				;* 恢复eax寄存器的值
+	pop eax
 	iretd
+
+
+; 	push eax
+; 	mov eax, 0
+; 	cmp [workingTask], eax
+; 	jz .zero
+
+; 	mov eax, 1
+; 	cmp [workingTask], eax
+; 	jz .one
+	
+; 	mov eax, 2
+; 	cmp [workingTask], eax
+; 	jz .two
+
+; .three:		;* workingTask = 3 时
+; 	mov byte [workingTask], 0
+; 	mov al, 20h
+; 	out 20h, al
+; 	jmp SelectorTSSB:0
+; 	jmp .exit
+
+; .zero:     ;* workingTask = 0 时
+; 	mov byte [workingTask], 1
+; 	mov al, 20h
+; 	out 20h, al     ;* 发送EOI
+; 	jmp SelectorTSSA:0
+; 	jmp .exit
+
+; .one:	   ;* workingTask = 1 时
+; 	mov byte [workingTask], 2
+; 	mov al, 20h
+; 	out 20h, al
+; 	jmp SelectorTSSC:0
+; 	jmp .exit
+
+; .two:		;* workingTask = 2 时
+; 	mov byte [workingTask], 3
+; 	mov al, 20h
+; 	out 20h, al
+; 	jmp SelectorTSSD:0
+; 	jmp .exit
+
+; .exit:      ;* 所有路径跳出时都跳转到此处
+; 	pop eax
+; 	iretd
+
+
+; 	push eax
+; 	mov eax, 1
+; 	cmp [workingTask], eax
+; 	jz .BAR
+
+; 	mov byte [workingTask], 1	;! workingTask = 0时
+; 	mov al, 20h
+; 	out 20h, al			;* 发送 EOI
+; 	jmp SelectorTSSA:0
+; 	jmp .exit
+
+; .BAR:                           ;! workingTask = 1时
+; 	mov byte [workingTask], 0
+; 	mov al, 20h
+; 	out 20h, al			;* 发送 EOI
+; 	jmp SelectorTSSB:0
+; 	jmp .exit
+
+; .exit:
+; 	pop eax				;* 恢复eax寄存器的值
+; 	iretd
 
 
 _SpuriousHandler:
@@ -721,13 +1050,13 @@ SetupPaging:
 	add	eax, 4096		; 每一页指向 4K 的空间
 	loop	.2
 
-	mov	eax, PageDirBase0    ;* 首先让cr3寄存器指向页表PageDirBase0
-	mov	cr3, eax
-	mov	eax, cr0
-	or	eax, 80000000h       ;* 设置cr0寄存器的最高位来打开分页机制
-	mov	cr0, eax
-	jmp	short .3
-.3:
+; 	mov	eax, PageDirBase0    ;!! 首先让cr3寄存器指向页表PageDirBase0
+; 	mov	cr3, eax
+; 	mov	eax, cr0
+; 	or	eax, 80000000h       ;* 设置cr0寄存器的最高位来打开分页机制
+; 	mov	cr0, eax
+; 	jmp	short .3
+; .3:
 	nop
 
     ;* 初始化第二个页目录和页表
@@ -770,6 +1099,95 @@ SetupPaging:
 
     nop
 
+	;* 初始化第三个页目录
+	mov edi, PageDirBase2
+	xor eax, eax
+	mov eax, PageTblBase2 | PG_P | PG_USU | PG_RWW
+	mov ecx, [PageTableNumber]
+.6:
+	stosd
+	add eax, 4096
+	loop .6
+
+	;* 初始化第三个页表
+	mov eax, [PageTableNumber]   ;* 页表的个数
+	mov ebx, 1024
+	mul ebx
+	mov ecx, eax     ;* PTE个数 = 页表个数 * 1024
+	mov edi, PageTblBase2
+	xor eax, eax
+	mov eax, PG_P | PG_USU | PG_RWW
+.7:
+	stosd 
+	add eax, 4096      ;* 每一页指向4K的空间
+	loop .7
+
+	;* 在此假设内存是大于8M的
+	mov eax, LinearAddrDemo
+	shr eax, 22
+	mov ebx, 4096
+	mul ebx
+	mov ecx, eax
+	mov eax, LinearAddrDemo
+	shr eax, 12
+	and eax, 03FFh
+	mov ebx, 4
+	mul ebx
+	add eax, ecx
+	add eax, PageTblBase2   ;* 改变特定的线性地址和物理地址的映射关系
+	mov dword [es:eax], ProcThird | PG_P | PG_USU | PG_RWW
+
+	nop
+
+	;* 初始化第四个页目录
+	mov edi, PageDirBase3
+	xor eax, eax
+	mov eax, PageTblBase3 | PG_P | PG_USU | PG_RWW
+	mov ecx, [PageTableNumber]
+.8:
+	stosd
+	add eax, 4096
+	loop .8
+
+	;* 初始化第四个页表
+	mov eax, [PageTableNumber]   ;* 页表的个数
+	mov ebx, 1024
+	mul ebx
+	mov ecx, eax     ;* PTE个数 = 页表个数 * 1024
+	mov edi, PageTblBase3
+	xor eax, eax
+	mov eax, PG_P | PG_USU | PG_RWW
+.9:
+	stosd 
+	add eax, 4096      ;* 每一页指向4K的空间
+	loop .9
+
+	;* 在此假设内存是大于8M的
+	mov eax, LinearAddrDemo
+	shr eax, 22
+	mov ebx, 4096
+	mul ebx
+	mov ecx, eax
+	mov eax, LinearAddrDemo
+	shr eax, 12
+	and eax, 03FFh
+	mov ebx, 4
+	mul ebx
+	add eax, ecx
+	add eax, PageTblBase3   ;* 改变特定的线性地址和物理地址的映射关系
+	mov dword [es:eax], ProcFourth | PG_P | PG_USU | PG_RWW
+
+	nop
+
+	mov eax, PageDirBase1    ;?? 初始指向PageDirBase1 -> right?
+	mov cr3, eax
+	mov eax, cr0
+	or eax, 80000000h
+	mov cr0, eax
+	jmp short .10
+.10:
+	nop
+
 	ret
 ;* 分页机制启动完毕 ----------------------------------------------------------
 
@@ -790,7 +1208,7 @@ OffsetFoo	equ	Foo - $$
     mov al, 'T'
 	mov	[gs:((80 * 17 + 3) * 2)], ax	; 屏幕第 17 行, 第 3 列
 
-        retf
+    retf
 LenFoo	equ	$ - Foo
 ;* ---------------------------------------------------------------------------
 
@@ -811,7 +1229,43 @@ OffsetBar	equ	Bar - $$
 	mov	[gs:((80 * 17 + 3) * 2)], ax	; 屏幕第 17 行, 第 3 列。 
     retf
 LenBar	equ	$ - Bar
-; ---------------------------------------------------------------------------
+;* ---------------------------------------------------------------------------
+
+;* Third -----------------------------------------------------------------------
+Third:
+OffsetThird	equ	Third - $$
+	mov	ax, SelectorVideo
+	mov	gs, ax			
+    mov	ah, 0Ch				; 0000: 黑底    1100: 红字
+	mov	al, 'V'
+	mov	[gs:((80 * 17 + 0) * 2)], ax	; 屏幕第 17 行, 第 0 列。
+	mov	al, 'E'
+	mov	[gs:((80 * 17 + 1) * 2)], ax	; 屏幕第 17 行, 第 1 列。
+	mov	al, 'R'
+	mov	[gs:((80 * 17 + 2) * 2)], ax	; 屏幕第 17 行, 第 2 列。
+    mov	al, 'Y'
+	mov	[gs:((80 * 17 + 3) * 2)], ax	; 屏幕第 17 行, 第 3 列。 
+    retf
+LenThird	equ	$ - Third
+;* ---------------------------------------------------------------------------
+
+;* Fourth -----------------------------------------------------------------------
+Fourth:
+OffsetFourth	equ	Fourth - $$
+	mov	ax, SelectorVideo
+	mov	gs, ax			
+    mov	ah, 0Ch				; 0000: 黑底    1100: 红字
+	mov	al, 'L'
+	mov	[gs:((80 * 17 + 0) * 2)], ax	; 屏幕第 17 行, 第 0 列。
+	mov	al, 'O'
+	mov	[gs:((80 * 17 + 1) * 2)], ax	; 屏幕第 17 行, 第 1 列。
+	mov	al, 'V'
+	mov	[gs:((80 * 17 + 2) * 2)], ax	; 屏幕第 17 行, 第 2 列。
+    mov	al, 'E'
+	mov	[gs:((80 * 17 + 3) * 2)], ax	; 屏幕第 17 行, 第 3 列。 
+    retf
+LenFourth	equ	$ - Fourth
+;* ---------------------------------------------------------------------------
 
 
 %include	"lib.inc"
@@ -871,7 +1325,7 @@ ALIGN	32
 LABEL_LDT_A:
 ;*                                   段基址,         段界限,      属性
 LABEL_LDT_DESC_CODE_A:	Descriptor      0,      CodeALen-1,     DA_C + DA_32	; Code, 32 位
-LABEL_LDT_DESC_STACK_A: Descriptor      0,      TopOfStackA,    DA_DRWA | DA_32 ; Stack
+LABEL_LDT_DESC_STACK_A: Descriptor      0,      TopOfStackA,    DA_DRWA + DA_32 ; Stack
 
 LDTALen		equ	$ - LABEL_LDT_A
 
@@ -918,13 +1372,13 @@ CodeALen	equ	$ - LABEL_CODE_A
 ;* End of [SECTION .lc]
 
 
-;*ANCHOR - LDT2
+;*ANCHOR - LDTB
 [SECTION .ldt2]
 ALIGN	32
 LABEL_LDT_B:
 ;                                   段基址,         段界限,      属性
 LABEL_LDT_DESC_CODE_B:	Descriptor      0,      CodeBLen-1,     DA_C + DA_32	; Code, 32 位
-LABEL_LDT_DESC_STACK_B: Descriptor      0,      TopOfStackB,    DA_DRWA | DA_32 ; Stack 
+LABEL_LDT_DESC_STACK_B: Descriptor      0,      TopOfStackB,    DA_DRWA + DA_32 ; Stack 
 
 LDTBLen		equ	$ - LABEL_LDT_B
 
@@ -934,7 +1388,7 @@ SelectorLDTStackB   equ LABEL_LDT_DESC_STACK_B - LABEL_LDT_B + SA_TIL
 ;* End of [SECTION .ldt2]
 
 
-;*ANCHOR - LDT2的栈段 StackA2(LDT2的32位栈段)
+;*ANCHOR - LDTB的栈段 StackA2(LDT2的32位栈段)
 [SECTION .ls2]
 ALIGN	32
 [BITS	32]
@@ -943,7 +1397,7 @@ LABEL_LDT_STACK_B:
 TopOfStackB	equ	$ - LABEL_LDT_STACK_B - 1
 ;* End of LDT2 stack 
 
-;*ANCHOR - LDT2的代码段 CodeA2(LDT2的32位代码段）
+;*ANCHOR - LDTB的代码段 CodeA2(LDT2的32位代码段）
 [SECTION .lc2]
 ALIGN	32
 [BITS	32]
@@ -953,6 +1407,81 @@ LABEL_CODE_B:
         jmp     .loop
 CodeBLen	equ	$ - LABEL_CODE_B
 ;* End of [SECTION .lc2]
+
+
+;*ANCHOR - LDT-C
+[SECTION .ldt3]
+ALIGN	32
+LABEL_LDT_C:
+;*                                   段基址,         段界限,      属性
+LABEL_LDT_DESC_CODE_C:	Descriptor      0,      CodeCLen-1,     DA_C + DA_32	; Code, 32 位
+LABEL_LDT_DESC_STACK_C: Descriptor      0,      TopOfStackC,    DA_DRWA + DA_32 ; Stack
+
+LDTCLen		equ	$ - LABEL_LDT_C
+
+;* LDT_C 选择子
+SelectorLDTCodeC        equ LABEL_LDT_DESC_CODE_C - LABEL_LDT_C + SA_TIL
+SelectorLDTStackC       equ LABEL_LDT_DESC_STACK_C - LABEL_LDT_C + SA_TIL
+;* End of [SECTION .ldt3]
+
+
+;*ANCHOR - LDT-C的栈段 StackC
+[SECTION .ls3]
+ALIGN	32
+[BITS	32]
+LABEL_LDT_STACK_C:
+	times 512 db 0
+TopOfStackC	equ	$ - LABEL_LDT_STACK_C - 1
+;* End of LDT-C stack
+
+;*ANCHOR - LDTC的代码段 CodeA3(LDT-C的32位代码段）
+[SECTION .lc3]
+ALIGN	32
+[BITS	32]
+LABEL_CODE_C:
+.loop:
+        call	SelectorFlatC:LinearAddrDemo
+        jmp     .loop
+CodeCLen	equ	$ - LABEL_CODE_C
+;* End of [SECTION .lc3]
+
+
+
+;*ANCHOR - LDT-D
+[SECTION .ldt4]
+ALIGN	32
+LABEL_LDT_D:
+;*                                   段基址,         段界限,      属性
+LABEL_LDT_DESC_CODE_D:	Descriptor      0,      CodeDLen-1,     DA_C + DA_32	; Code, 32 位
+LABEL_LDT_DESC_STACK_D: Descriptor      0,      TopOfStackD,    DA_DRWA + DA_32 ; Stack
+
+LDTDLen		equ	$ - LABEL_LDT_D
+
+;* LDT_D 选择子
+SelectorLDTCodeD        equ LABEL_LDT_DESC_CODE_D - LABEL_LDT_D + SA_TIL
+SelectorLDTStackD       equ LABEL_LDT_DESC_STACK_D - LABEL_LDT_D + SA_TIL
+;* End of [SECTION .ldt4]
+
+
+;*ANCHOR - LDT-D的栈段 StackD
+[SECTION .ls4]
+ALIGN	32
+[BITS	32]
+LABEL_LDT_STACK_D:
+	times 512 db 0
+TopOfStackD	equ	$ - LABEL_LDT_STACK_D - 1
+;* End of LDT-D stack
+
+;*ANCHOR - LDTD的代码段 CodeA4(LDT-D的32位代码段）
+[SECTION .lc4]
+ALIGN	32
+[BITS	32]
+LABEL_CODE_D:
+.loop:
+        call	SelectorFlatC:LinearAddrDemo
+        jmp     .loop
+CodeDLen	equ	$ - LABEL_CODE_D
+;* End of [SECTION .lc4]
 
 
 ;*ANCHOR - Ring3的32位代码段
